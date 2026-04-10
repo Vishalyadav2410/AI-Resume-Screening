@@ -1,5 +1,6 @@
 import axios from "axios";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Card,
   CardContent,
@@ -14,34 +15,101 @@ import {
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import Dashboard from "./Dashboard";
 
+// 🔗 API CONFIG
+const API = "http://127.0.0.1:8000";
+// const API = "https://resume-ai-backend-u4mo.onrender.com";
+
 function Results() {
   const [job, setJob] = useState("");
   const [result, setResult] = useState([]);
+  const [loading, setLoading] = useState(false);
 
+  const navigate = useNavigate();
+
+  // 🔐 CHECK LOGIN
+  useEffect(() => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      navigate("/login");
+    }
+  }, [navigate]);
+
+  // 🧠 RANK FUNCTION
   const handleRank = async () => {
     try {
-      const res = await axios.post("http://127.0.0.1:8000/rank/", {
-        job_description: job,
-      });
+      const token = localStorage.getItem("token");
+
+      if (!token) {
+        alert("⚠️ Please login first!");
+        navigate("/login");
+        return;
+      }
+
+      setLoading(true);
+
+      const res = await axios.post(
+        `${API}/rank/`,
+        { job_description: job },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
       setResult(res.data.ranking);
+
     } catch (err) {
       console.error("Error:", err);
-      alert("Backend error! Check server.");
+
+      if (err.response?.status === 401) {
+        alert("❌ Session expired. Login again.");
+        localStorage.removeItem("token");
+        navigate("/login");
+      } else {
+        alert("⚠️ Backend error!");
+      }
+
+    } finally {
+      setLoading(false);
     }
+  };
+
+  // 📄 DOWNLOAD REPORT
+  const handleDownload = async () => {
+    try {
+      await axios.get(`${API}/download/`);
+      alert("✅ Report generated!");
+    } catch {
+      alert("❌ Error generating report");
+    }
+  };
+
+  // 🔓 LOGOUT
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    navigate("/login");
   };
 
   return (
     <Card elevation={6} sx={{ borderRadius: 3 }}>
       <CardContent>
-        <Typography variant="h6" gutterBottom>
-          Job Description
-        </Typography>
+
+        {/* HEADER */}
+        <Box display="flex" justifyContent="space-between" alignItems="center">
+          <Typography variant="h6">Job Description</Typography>
+
+          <Button variant="outlined" color="error" onClick={handleLogout}>
+            Logout
+          </Button>
+        </Box>
 
         <TextField
           fullWidth
           multiline
           rows={4}
           placeholder="Enter job description..."
+          sx={{ mt: 2 }}
           onChange={(e) => setJob(e.target.value)}
         />
 
@@ -50,14 +118,16 @@ function Results() {
           fullWidth
           sx={{ mt: 2 }}
           onClick={handleRank}
+          disabled={loading}
         >
-          Rank Candidates
+          {loading ? "Ranking..." : "Rank Candidates"}
         </Button>
+
         <Button
           variant="outlined"
           fullWidth
           sx={{ mt: 2 }}
-          onClick={() => axios.get("http://127.0.0.1:8000/download/")}
+          onClick={handleDownload}
         >
           Download Report
         </Button>
@@ -77,6 +147,7 @@ function Results() {
               <Avatar sx={{ bgcolor: "black" }}>
                 <EmojiEventsIcon />
               </Avatar>
+
               <div>
                 <Typography variant="h6">
                   Top Candidate #{result[0][0]}
@@ -101,6 +172,7 @@ function Results() {
                   ))}
                 </Box>
 
+                {/* 🧾 PREVIEW */}
                 <Typography variant="body2" mt={1}>
                   Preview: {result[0][4] || "No preview"}
                 </Typography>
@@ -139,7 +211,6 @@ function Results() {
                 </Typography>
               </Box>
 
-              {/* 📊 PROGRESS BAR */}
               <LinearProgress
                 variant="determinate"
                 value={(r[1] || 0) * 100}
@@ -150,12 +221,10 @@ function Results() {
                 }}
               />
 
-              {/* 🤖 AI Explanation */}
               <Typography variant="body2" mt={1}>
                 {r[2] || "No explanation"}
               </Typography>
 
-              {/* 🔍 Skills */}
               <Box mt={1}>
                 {(r[3] || []).map((skill, idx) => (
                   <Chip
@@ -167,13 +236,14 @@ function Results() {
                 ))}
               </Box>
 
-              {/* 🧾 Resume Preview */}
+              {/* 🧾 PREVIEW */}
               <Typography variant="body2" mt={1}>
                 Preview: {r[4] || "No preview available"}
               </Typography>
             </Box>
           ))}
         </Box>
+
       </CardContent>
     </Card>
   );

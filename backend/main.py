@@ -1,9 +1,16 @@
-from fastapi import FastAPI, UploadFile, File
+import os
 import shutil
-from pydantic import BaseModel
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-# 🔧 Custom utils
+# 🔐 Auth & DB
+from database import Base, engine, SessionLocal
+from models.user import User
+from auth import hash_password, verify_password, create_token
+
+# 🔧 Utils
 from utils.parser import extract_text_from_pdf
 from utils.anonymizer import anonymize_text
 from models.bert_model import get_embedding
@@ -12,10 +19,16 @@ from utils.skills import extract_skills
 
 from sklearn.metrics.pairwise import cosine_similarity
 
+# 📁 Create folder
+os.makedirs("data/resumes", exist_ok=True)
+
 # 🚀 App init
 app = FastAPI()
 
-# 🌐 CORS (for React frontend)
+# 🗄️ Create DB
+Base.metadata.create_all(bind=engine)
+
+# 🌐 CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,34 +38,101 @@ app.add_middleware(
 )
 
 # 🧠 In-memory storage
-resumes = []               # store TEXT
-resume_embeddings = []     # store EMBEDDINGS
+resumes = []
+resume_embeddings = []
 
 # ===============================
-# 📄 Upload Resume API
+# 🗄️ DB Dependency
+# ===============================
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ===============================
+# 🔐 AUTH APIs
+# ===============================
+
+# ✅ Register schema
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+# ✅ Login schema
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+# 🔐 REGISTER
+@app.post("/register/")
+def register(data: RegisterRequest, db: Session = Depends(get_db)):
+
+    existing_user = db.query(User).filter(User.username == data.username).first()
+
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User already exists")
+
+    new_user = User(
+        username=data.username,
+        password=hash_password(data.password)
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return {"message": "User registered successfully"}
+
+
+# 🔐 LOGIN
+@app.post("/login/")
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.username == data.username).first()
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if not verify_password(data.password, user.password):
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    token = create_token({"user": user.username})
+
+    return {"access_token": token}
+
+# ===============================
+# 📄 Upload Resume
 # ===============================
 @app.post("/upload_resume/")
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(files: list[UploadFile] = File(...)):
     global resumes, resume_embeddings
 
-    file_path = f"data/resumes/{file.filename}"
+    uploaded_files = []
 
-    # Save file
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    for file in files:
+        file_path = f"data/resumes/{file.filename}"
 
-    # Extract + clean text
-    text = extract_text_from_pdf(file_path)
-    text = anonymize_text(text)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    # Generate embedding
-    embedding = get_embedding(text)
+        text = extract_text_from_pdf(file_path)
+        text = anonymize_text(text)
 
-    # ✅ Store correctly
-    resumes.append(text)
-    resume_embeddings.append(embedding)
+        embedding = get_embedding(text)
 
-    return {"message": "Resume uploaded successfully"}
+        resumes.append(text)
+        resume_embeddings.append(embedding)
+
+        uploaded_files.append(file.filename)
+
+    return {
+        "message": "Resumes uploaded successfully",
+        "files": uploaded_files
+    }
 
 # ===============================
 # 📊 Request Model
@@ -61,37 +141,40 @@ class JobRequest(BaseModel):
     job_description: str
 
 # ===============================
-# 🧠 Ranking API
+# 🔒 TOKEN VERIFY (PROTECTION)
+# ===============================
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+security = HTTPBearer()
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    return credentials.credentials
+
+# ===============================
+# 🧠 Ranking API (PROTECTED)
 # ===============================
 @app.post("/rank/")
-async def rank(request: JobRequest):
+async def rank(request: JobRequest, token: str = Depends(verify_token)):
     scores = []
 
-    # ❌ No resumes case
     if not resumes:
         return {"ranking": [], "message": "No resumes uploaded"}
 
-    # Job embedding
     job_embedding = get_embedding(request.job_description)
 
-    # Loop through resumes
     for i, emb in enumerate(resume_embeddings):
         try:
-            # 🔢 Similarity
             similarity = cosine_similarity([job_embedding], [emb])[0][0]
 
-            # 🔍 Skills
             skills = extract_skills(resumes[i] or "")
 
-            # 🤖 Explanation
             explanation = generate_explanation(
                 request.job_description,
                 resumes[i] or ""
             )
 
-            # 📊 Smart scoring
             skill_score = len(skills) / 10
-            experience_score = resumes[i].lower().count("experience") * 0.05 if resumes[i] else 0
+            experience_score = resumes[i].lower().count("experience") * 0.05
 
             final_score = (
                 0.6 * similarity +
@@ -99,21 +182,23 @@ async def rank(request: JobRequest):
                 0.1 * experience_score
             )
 
-            # ✅ Append safe data
             scores.append((
                 int(i),
                 float(final_score),
-                str(explanation),
-                list(skills)
+                explanation,
+                skills
             ))
 
         except Exception as e:
-            print("Error in ranking:", e)
+            print("Error:", e)
 
-    # 🏆 Sort results
     ranked = sorted(scores, key=lambda x: x[1], reverse=True)
 
     return {"ranking": ranked}
+
+# ===============================
+# 📄 REPORT DOWNLOAD
+# ===============================
 from reportlab.platypus import SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -129,16 +214,4 @@ def download_report():
 
     doc.build(content)
 
-    return {"message": "Report generated successfully"}
-from fastapi import HTTPException
-from auth import create_token
-
-users = {"admin": "1234"}
-
-@app.post("/login/")
-def login(username: str, password: str):
-    if users.get(username) != password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    token = create_token({"user": username})
-    return {"access_token": token}
+    return {"message": "Report generated"}

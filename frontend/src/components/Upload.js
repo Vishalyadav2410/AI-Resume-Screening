@@ -8,10 +8,16 @@ import {
 } from "@mui/material";
 
 function Upload() {
+
   const handleUpload = async (e) => {
-    const file = e.target.files[0];
+    const files = e.target.files;
+
     const formData = new FormData();
-    formData.append("file", file);
+
+    // 🔥 Loop through all selected files
+    for (let i = 0; i < files.length; i++) {
+      formData.append("files", files[i]); // IMPORTANT: "files"
+    }
 
     try {
       const res = await axios.post(
@@ -24,10 +30,11 @@ function Upload() {
         }
       );
 
-      alert(res.data.message);
+      alert("Uploaded Successfully ✅");
+
     } catch (error) {
       console.error(error);
-      alert("Upload failed!");
+      alert("Upload failed ❌");
     }
   };
 
@@ -35,7 +42,7 @@ function Upload() {
     <Card elevation={6} sx={{ borderRadius: 3 }}>
       <CardContent>
         <Typography variant="h6" gutterBottom>
-          Upload Resume
+          Upload Resumes
         </Typography>
 
         <Box textAlign="center">
@@ -44,8 +51,14 @@ function Upload() {
             component="label"
             size="large"
           >
-            Upload Resume
-            <input type="file" hidden onChange={handleUpload} />
+            Upload Multiple Resumes
+            {/* 🔥 MULTIPLE ENABLED */}
+            <input
+              type="file"
+              hidden
+              multiple
+              onChange={handleUpload}
+            />
           </Button>
         </Box>
       </CardContent>
