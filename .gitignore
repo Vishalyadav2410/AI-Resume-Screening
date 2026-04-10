@@ -2,3 +2,18 @@ venv/
 node_modules/
 __pycache__/
 .env
+
+# database files
+*.db
+
+# pdf files (reports + resumes)
+*.pdf
+
+# resume storage folder
+backend/data/resumes/
+
+# python cache
+*.pyc
+
+# OS files
+.DS_Store
